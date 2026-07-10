@@ -74,91 +74,91 @@ def get_indices_dict():
     }
 
 
-# 3. Individual Ticker Data Loader (Prevents local timezone dropouts)
-def get_ticker_history(ticker, start_date, end_date):
-    try:
-        # Download individually to bypass global timeline synchronization issues
-        t = yf.Ticker(ticker)
-        df = t.history(start=start_date, end=end_date)
-        if not df.empty and "Close" in df.columns:
-            return df["Close"].dropna()
-    except Exception:
-        pass
-    return None
-
-
-# 4. Data Processing Engine
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+# 3. Data Processing Engine
+@st.cache_data(ttl=3600)  # Caches market data for 1 hour to prevent API throttling
 def fetch_and_calculate_performance(indices):
     records = []
     today = datetime.date.today()
     three_years_ago = today - datetime.timedelta(days=3 * 365)
     one_year_ago = today - datetime.timedelta(days=365)
 
-    # Status tracking inside Streamlit UI
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    total_indices = len(indices)
+    tickers_list = list(indices.keys())
 
-    for idx, (ticker, name) in enumerate(indices.items()):
-        status_text.text(f"Fetching data for: {name} ({ticker})...")
-        progress_bar.progress((idx + 1) / total_indices)
+    # Configure session headers to simulate a normal browser connection
+    yf.set_tz_cache_location("cache")
 
-        # Pull safe history framework
-        close_series = get_ticker_history(ticker, three_years_ago, today)
+    with st.spinner("Downloading global market data in a single batch..."):
+        try:
+            # Batch download everything at once to prevent 429 throttling
+            raw_data = yf.download(
+                tickers=tickers_list,
+                start=three_years_ago,
+                end=today,
+                group_by="ticker",  # Grouping by ticker ensures structure safety
+                threads=True,
+            )
+        except Exception as e:
+            st.error(f"Batch download error: {e}")
+            return pd.DataFrame()
 
-        if close_series is not None and len(close_series) > 0:
-            try:
-                current_val = close_series.iloc[-1]
+    if raw_data.empty:
+        return pd.DataFrame()
 
-                # Find closest matching dates using searchsorted to handle holidays/weekends
-                idx_12m = close_series.index.searchsorted(pd.Timestamp(one_year_ago))
-                idx_3yr = close_series.index.searchsorted(
-                    pd.Timestamp(three_years_ago)
-                )
-
-                # Constrain index access bounds securely
-                idx_12m = min(idx_12m, len(close_series) - 1)
-                idx_3yr = min(idx_3yr, len(close_series) - 1)
-
-                val_12m = close_series.iloc[idx_12m]
-                val_3yr = close_series.iloc[idx_3yr]
-
-                # Performance Math formulas
-                perf_12m = ((current_val - val_12m) / val_12m) * 100
-                perf_3yr = ((current_val - val_3yr) / val_3yr) * 100
-
-                records.append(
-                    {
-                        "Ticker": ticker,
-                        "Index Name": name,
-                        "Current Level": round(current_val, 2),
-                        "12-Month Return (%)": round(perf_12m, 2),
-                        "3-Year Return (%)": round(perf_3yr, 2),
-                    }
-                )
-            except Exception:
+    # Loop through each ticker and parse the structural sub-tables
+    for ticker, name in indices.items():
+        try:
+            # Safely grab the specific sub-dataframe for the ticker
+            if ticker in raw_data.columns.levels[0]:
+                df_ticker = raw_data[ticker]["Close"].dropna()
+            else:
                 continue
 
-    # Clear loading bars when finished
-    progress_bar.empty()
-    status_text.empty()
+            if df_ticker.empty or len(df_ticker) < 5:
+                continue
+
+            current_val = df_ticker.iloc[-1]
+
+            # Find closest date indices using searchsorted
+            idx_12m = df_ticker.index.searchsorted(pd.Timestamp(one_year_ago))
+            idx_3yr = df_ticker.index.searchsorted(pd.Timestamp(three_years_ago))
+
+            # Bound constraints
+            idx_12m = min(idx_12m, len(df_ticker) - 1)
+            idx_3yr = min(idx_3yr, len(df_ticker) - 1)
+
+            val_12m = df_ticker.iloc[idx_12m]
+            val_3yr = df_ticker.iloc[idx_3yr]
+
+            # Calculate drops/gains
+            perf_12m = ((current_val - val_12m) / val_12m) * 100
+            perf_3yr = ((current_val - val_3yr) / val_3yr) * 100
+
+            records.append(
+                {
+                    "Ticker": ticker,
+                    "Index Name": name,
+                    "Current Level": round(current_val, 2),
+                    "12-Month Return (%)": round(perf_12m, 2),
+                    "3-Year Return (%)": round(perf_3yr, 2),
+                }
+            )
+        except Exception:
+            continue
 
     return pd.DataFrame(records)
 
 
-# 5. Presentation UI Setup
+# 4. Presentation UI Setup
 st.title("📉 Comprehensive Global Market Indices Decline Analyzer")
 st.markdown(
     "Analyze and isolate stock market indices that have experienced the steepest corrections globally over 12-month and 3-year windows."
 )
 
 indices_dict = get_indices_dict()
-
 df_metrics = fetch_and_calculate_performance(indices_dict)
 
 if not df_metrics.empty:
-    # Navigation Sidebar Sorting Controls
+    # Sidebar Configuration Controls
     st.sidebar.header("Ranking Configuration")
     sort_horizon = st.sidebar.selectbox(
         "Primary Sort Benchmark",
@@ -166,10 +166,10 @@ if not df_metrics.empty:
         index=0,
     )
 
-    # Sort logic: Worst performing indices (lowest return/biggest falls) first
+    # Sort from worst performing (biggest fall) to best performing
     df_sorted = df_metrics.sort_values(by=sort_horizon, ascending=True)
 
-    # Transform numerical fields into human-readable metric highlights
+    # Transform data columns for readability
     def format_dataframe(df):
         styled_df = df.copy()
         styled_df["12-Month Return (%)"] = styled_df["12-Month Return (%)"].map(
@@ -183,10 +183,11 @@ if not df_metrics.empty:
         )
         return styled_df
 
-    # Render Visual Framework
+    # Render Main Data Table
     st.subheader(f"Global Indices Ranked by Performance ({sort_horizon})")
     st.markdown(
-        f"**Showing {len(df_sorted)} of {len(indices_dict)} monitored global indices.** *Top positions represent the deepest market contractions (biggest falls to no falls).* "
+        f"**Successfully retrieved {len(df_sorted)} out of {len(indices_dict)} global indices.** "
+        f"Top entries reflect the largest falls."
     )
 
     st.dataframe(
@@ -218,6 +219,5 @@ if not df_metrics.empty:
         )
 else:
     st.error(
-        "Unable to fetch financial data. Please check connection configurations or try again."
+        "Yahoo Finance timed out or rate-limited the connection. Please refresh the page in a few moments."
     )
-
