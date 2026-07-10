@@ -84,8 +84,8 @@ def fetch_and_calculate_performance(indices):
 
     tickers_list = list(indices.keys())
 
-    # Download via single batch request to avoid API throttling blocks
     try:
+        # Download data as a unified framework
         raw_data = yf.download(
             tickers=tickers_list,
             start=three_years_ago,
@@ -99,31 +99,39 @@ def fetch_and_calculate_performance(indices):
     if raw_data.empty:
         return pd.DataFrame()
 
-    # Process metrics
+    # CRITICAL FIX: Swap MultiIndex layout levels from [Attribute, Ticker] to [Ticker, Attribute]
+    # This allows direct df[ticker] slicing without structural errors.
+    try:
+        raw_data = raw_data.swaplevel(0, 1, axis=1)
+    except Exception:
+        pass
+
+    # Parse and generate metrics safely
     for ticker, name in indices.items():
         try:
-            # Check if multi-index contains ticker frame safely
             if ticker not in raw_data.columns.levels[0]:
                 continue
 
-            # Isolate individual series using cross-sections
-            df_ticker = raw_data[ticker]["Close"].dropna()
+            # Isolate the isolated asset sub-table frame
+            df_ticker = raw_data[ticker].dropna(subset=["Close"])
 
             if df_ticker.empty or len(df_ticker) < 5:
                 continue
 
-            current_val = df_ticker.iloc[-1]
+            series_close = df_ticker["Close"]
+            current_val = series_close.iloc[-1]
 
-            # Approximate historical reference markers
-            idx_12m = df_ticker.index.searchsorted(pd.Timestamp(one_year_ago))
-            idx_3yr = df_ticker.index.searchsorted(pd.Timestamp(three_years_ago))
+            # Use searchsorted to target timeframe indices safely
+            idx_12m = series_close.index.searchsorted(pd.Timestamp(one_year_ago))
+            idx_3yr = series_close.index.searchsorted(
+                pd.Timestamp(three_years_ago)
+            )
 
-            # Bound constraints protection
-            idx_12m = min(idx_12m, len(df_ticker) - 1)
-            idx_3yr = min(idx_3yr, len(df_ticker) - 1)
+            idx_12m = min(idx_12m, len(series_close) - 1)
+            idx_3yr = min(idx_3yr, len(series_close) - 1)
 
-            val_12m = df_ticker.iloc[idx_12m]
-            val_3yr = df_ticker.iloc[idx_3yr]
+            val_12m = series_close.iloc[idx_12m]
+            val_3yr = series_close.iloc[idx_3yr]
 
             # Performance Math calculations
             perf_12m = ((current_val - val_12m) / val_12m) * 100
@@ -145,7 +153,7 @@ def fetch_and_calculate_performance(indices):
 
 
 # 4. Presentation UI Setup
-st.title("导 Comprehensive Global Market Indices Decline Analyzer")
+st.title("📉 Comprehensive Global Market Indices Decline Analyzer")
 st.markdown(
     "Analyze and isolate stock market indices that have experienced the steepest corrections globally over 12-month and 3-year windows."
 )
@@ -156,7 +164,7 @@ with st.spinner("Downloading global market data in a single batch..."):
     df_metrics = fetch_and_calculate_performance(indices_dict)
 
 if not df_metrics.empty:
-    # Sidebar Sorting Selection Controls
+    # Sidebar Filtering & Sorting Selection Controls
     st.sidebar.header("Ranking Configuration")
     sort_horizon = st.sidebar.selectbox(
         "Primary Sort Benchmark",
@@ -167,7 +175,7 @@ if not df_metrics.empty:
     # Sort from worst performing (biggest fall) to best performing
     df_sorted = df_metrics.sort_values(by=sort_horizon, ascending=True)
 
-    # Human-readable formatting function
+    # Human-readable column transformer logic
     def format_dataframe(df):
         styled_df = df.copy()
         styled_df["12-Month Return (%)"] = styled_df["12-Month Return (%)"].map(
@@ -181,7 +189,7 @@ if not df_metrics.empty:
         )
         return styled_df
 
-    # Render Main Data Table Grid
+    # Render Main Data Table Grid frame
     st.subheader(f"Global Indices Ranked by Performance ({sort_horizon})")
     st.markdown(
         f"**Successfully retrieved {len(df_sorted)} out of {len(indices_dict)} global indices.** "
@@ -199,7 +207,7 @@ if not df_metrics.empty:
     col1, col2 = st.columns(2)
 
     with col1:
-        worst_12m = df_metrics.sort_values(by="12-Month Return (%)").iloc[0]
+        worst_12m = df_metrics.sort_values(by="12-Month Return (%)").iloc
         st.metric(
             label=f"12-Month Maximum Drawdown ({worst_12m['Index Name']})",
             value=f"{worst_12m['12-Month Return (%)']}%",
@@ -208,7 +216,7 @@ if not df_metrics.empty:
         )
 
     with col2:
-        worst_3yr = df_metrics.sort_values(by="3-Year Return (%)").iloc[0]
+        worst_3yr = df_metrics.sort_values(by="3-Year Return (%)").iloc
         st.metric(
             label=f"3-Year Maximum Drawdown ({worst_3yr['Index Name']})",
             value=f"{worst_3yr['3-Year Return (%)']}%",
