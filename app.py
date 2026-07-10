@@ -85,48 +85,46 @@ def fetch_and_calculate_performance(indices):
     tickers_list = list(indices.keys())
 
     try:
-        # Download data as a unified framework
+        # Download data by specifying a standard column layout.
+        # This isolates features cleanly into raw, separate tables.
         raw_data = yf.download(
             tickers=tickers_list,
             start=three_years_ago,
             end=today,
-            group_by="ticker",
+            group_by="column",  # This ensures flat columns matching metrics
             threads=True,
         )
     except Exception:
         return pd.DataFrame()
 
-    if raw_data.empty:
+    if raw_data.empty or "Close" not in raw_data.columns:
         return pd.DataFrame()
 
-    # CRITICAL FIX: Swap MultiIndex layout levels from [Attribute, Ticker] to [Ticker, Attribute]
-    # This allows direct df[ticker] slicing without structural errors.
-    try:
-        raw_data = raw_data.swaplevel(0, 1, axis=1)
-    except Exception:
-        pass
+    # Isolate the 'Close' sub-table matrix cleanly
+    close_matrix = raw_data["Close"]
 
-    # Parse and generate metrics safely
-    for ticker, name in indices.items():
+    # Loop through columns safely without checking nested dictionary headers
+    for ticker in tickers_list:
+        if ticker not in close_matrix.columns:
+            continue
+
         try:
-            if ticker not in raw_data.columns.levels[0]:
+            # Extract historical time series for index drops
+            series_close = close_matrix[ticker].dropna()
+
+            if series_close.empty or len(series_close) < 5:
                 continue
 
-            # Isolate the isolated asset sub-table frame
-            df_ticker = raw_data[ticker].dropna(subset=["Close"])
-
-            if df_ticker.empty or len(df_ticker) < 5:
-                continue
-
-            series_close = df_ticker["Close"]
             current_val = series_close.iloc[-1]
+            name = indices[ticker]
 
-            # Use searchsorted to target timeframe indices safely
+            # Use searchsorted to capture dates safely around weekends and market holidays
             idx_12m = series_close.index.searchsorted(pd.Timestamp(one_year_ago))
             idx_3yr = series_close.index.searchsorted(
                 pd.Timestamp(three_years_ago)
             )
 
+            # Keep index lookups bound inside valid parameters
             idx_12m = min(idx_12m, len(series_close) - 1)
             idx_3yr = min(idx_3yr, len(series_close) - 1)
 
@@ -175,7 +173,7 @@ if not df_metrics.empty:
     # Sort from worst performing (biggest fall) to best performing
     df_sorted = df_metrics.sort_values(by=sort_horizon, ascending=True)
 
-    # Human-readable column transformer logic
+    # Human-readable column formatting function
     def format_dataframe(df):
         styled_df = df.copy()
         styled_df["12-Month Return (%)"] = styled_df["12-Month Return (%)"].map(
@@ -207,7 +205,7 @@ if not df_metrics.empty:
     col1, col2 = st.columns(2)
 
     with col1:
-        worst_12m = df_metrics.sort_values(by="12-Month Return (%)").iloc
+        worst_12m = df_metrics.sort_values(by="12-Month Return (%)").iloc[0]
         st.metric(
             label=f"12-Month Maximum Drawdown ({worst_12m['Index Name']})",
             value=f"{worst_12m['12-Month Return (%)']}%",
@@ -216,7 +214,7 @@ if not df_metrics.empty:
         )
 
     with col2:
-        worst_3yr = df_metrics.sort_values(by="3-Year Return (%)").iloc
+        worst_3yr = df_metrics.sort_values(by="3-Year Return (%)").iloc[0]
         st.metric(
             label=f"3-Year Maximum Drawdown ({worst_3yr['Index Name']})",
             value=f"{worst_3yr['3-Year Return (%)']}%",
