@@ -74,73 +74,80 @@ def get_indices_dict():
     }
 
 
-# 3. Data Processing Engine
-@st.cache_data(ttl=3600)  # Caches market data for 1 hour to prevent API throttling
+# 3. Individual Ticker Data Loader (Prevents local timezone dropouts)
+def get_ticker_history(ticker, start_date, end_date):
+    try:
+        # Download individually to bypass global timeline synchronization issues
+        t = yf.Ticker(ticker)
+        df = t.history(start=start_date, end=end_date)
+        if not df.empty and "Close" in df.columns:
+            return df["Close"].dropna()
+    except Exception:
+        pass
+    return None
+
+
+# 4. Data Processing Engine
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def fetch_and_calculate_performance(indices):
     records = []
     today = datetime.date.today()
     three_years_ago = today - datetime.timedelta(days=3 * 365)
+    one_year_ago = today - datetime.timedelta(days=365)
 
-    # Fetch batch historical close data
-    tickers_list = list(indices.keys())
-    data = yf.download(
-        tickers_list, start=three_years_ago, end=today, group_by="ticker"
-    )
+    # Status tracking inside Streamlit UI
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    total_indices = len(indices)
 
-    for ticker, name in indices.items():
-        try:
-            # Extract historical close series for the specific index
-            if len(tickers_list) > 1:
-                if ticker in data.columns.levels[0]:
-                    df_ticker = data[ticker]["Close"].dropna()
-                else:
-                    continue
-            else:
-                df_ticker = data["Close"].dropna()
+    for idx, (ticker, name) in enumerate(indices.items()):
+        status_text.text(f"Fetching data for: {name} ({ticker})...")
+        progress_bar.progress((idx + 1) / total_indices)
 
-            if df_ticker.empty:
+        # Pull safe history framework
+        close_series = get_ticker_history(ticker, three_years_ago, today)
+
+        if close_series is not None and len(close_series) > 0:
+            try:
+                current_val = close_series.iloc[-1]
+
+                # Find closest matching dates using searchsorted to handle holidays/weekends
+                idx_12m = close_series.index.searchsorted(pd.Timestamp(one_year_ago))
+                idx_3yr = close_series.index.searchsorted(
+                    pd.Timestamp(three_years_ago)
+                )
+
+                # Constrain index access bounds securely
+                idx_12m = min(idx_12m, len(close_series) - 1)
+                idx_3yr = min(idx_3yr, len(close_series) - 1)
+
+                val_12m = close_series.iloc[idx_12m]
+                val_3yr = close_series.iloc[idx_3yr]
+
+                # Performance Math formulas
+                perf_12m = ((current_val - val_12m) / val_12m) * 100
+                perf_3yr = ((current_val - val_3yr) / val_3yr) * 100
+
+                records.append(
+                    {
+                        "Ticker": ticker,
+                        "Index Name": name,
+                        "Current Level": round(current_val, 2),
+                        "12-Month Return (%)": round(perf_12m, 2),
+                        "3-Year Return (%)": round(perf_3yr, 2),
+                    }
+                )
+            except Exception:
                 continue
 
-            current_val = df_ticker.iloc[-1]
-
-            # Approximate historical calendar offset marks
-            idx_12m = df_ticker.index.searchsorted(
-                pd.Timestamp(today - datetime.timedelta(days=365))
-            )
-            idx_3yr = df_ticker.index.searchsorted(pd.Timestamp(three_years_ago))
-
-            # Guard against out-of-bounds indices
-            val_12m = (
-                df_ticker.iloc[idx_12m]
-                if idx_12m < len(df_ticker)
-                else df_ticker.iloc[0]
-            )
-            val_3yr = (
-                df_ticker.iloc[idx_3yr]
-                if idx_3yr < len(df_ticker)
-                else df_ticker.iloc[0]
-            )
-
-            # Performance Math: (Current - Past) / Past * 100
-            perf_12m = ((current_val - val_12m) / val_12m) * 100
-            perf_3yr = ((current_val - val_3yr) / val_3yr) * 100
-
-            records.append(
-                {
-                    "Ticker": ticker,
-                    "Index Name": name,
-                    "Current Level": round(current_val, 2),
-                    "12-Month Return (%)": round(perf_12m, 2),
-                    "3-Year Return (%)": round(perf_3yr, 2),
-                }
-            )
-        except Exception:
-            continue  # Gracefully skip failed ticker items
+    # Clear loading bars when finished
+    progress_bar.empty()
+    status_text.empty()
 
     return pd.DataFrame(records)
 
 
-# 4. Presentation UI Setup
+# 5. Presentation UI Setup
 st.title("📉 Comprehensive Global Market Indices Decline Analyzer")
 st.markdown(
     "Analyze and isolate stock market indices that have experienced the steepest corrections globally over 12-month and 3-year windows."
@@ -148,8 +155,7 @@ st.markdown(
 
 indices_dict = get_indices_dict()
 
-with st.spinner("Streaming real-time global index frames..."):
-    df_metrics = fetch_and_calculate_performance(indices_dict)
+df_metrics = fetch_and_calculate_performance(indices_dict)
 
 if not df_metrics.empty:
     # Navigation Sidebar Sorting Controls
@@ -180,7 +186,7 @@ if not df_metrics.empty:
     # Render Visual Framework
     st.subheader(f"Global Indices Ranked by Performance ({sort_horizon})")
     st.markdown(
-        "*Note: Top positions represent the deepest market contractions (biggest falls to no falls).* "
+        f"**Showing {len(df_sorted)} of {len(indices_dict)} monitored global indices.** *Top positions represent the deepest market contractions (biggest falls to no falls).* "
     )
 
     st.dataframe(
@@ -214,3 +220,4 @@ else:
     st.error(
         "Unable to fetch financial data. Please check connection configurations or try again."
     )
+
