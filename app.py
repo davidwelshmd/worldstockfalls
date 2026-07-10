@@ -75,7 +75,7 @@ def get_indices_dict():
 
 
 # 3. Data Processing Engine
-@st.cache_data(ttl=3600)  # Caches market data for 1 hour to prevent API throttling
+@st.cache_data(ttl=3600)
 def fetch_and_calculate_performance(indices):
     records = []
     today = datetime.date.today()
@@ -84,52 +84,48 @@ def fetch_and_calculate_performance(indices):
 
     tickers_list = list(indices.keys())
 
-    # Configure session headers to simulate a normal browser connection
-    yf.set_tz_cache_location("cache")
-
-    with st.spinner("Downloading global market data in a single batch..."):
-        try:
-            # Batch download everything at once to prevent 429 throttling
-            raw_data = yf.download(
-                tickers=tickers_list,
-                start=three_years_ago,
-                end=today,
-                group_by="ticker",  # Grouping by ticker ensures structure safety
-                threads=True,
-            )
-        except Exception as e:
-            st.error(f"Batch download error: {e}")
-            return pd.DataFrame()
+    # Download via single batch request to avoid API throttling blocks
+    try:
+        raw_data = yf.download(
+            tickers=tickers_list,
+            start=three_years_ago,
+            end=today,
+            group_by="ticker",
+            threads=True,
+        )
+    except Exception:
+        return pd.DataFrame()
 
     if raw_data.empty:
         return pd.DataFrame()
 
-    # Loop through each ticker and parse the structural sub-tables
+    # Process metrics
     for ticker, name in indices.items():
         try:
-            # Safely grab the specific sub-dataframe for the ticker
-            if ticker in raw_data.columns.levels[0]:
-                df_ticker = raw_data[ticker]["Close"].dropna()
-            else:
+            # Check if multi-index contains ticker frame safely
+            if ticker not in raw_data.columns.levels[0]:
                 continue
+
+            # Isolate individual series using cross-sections
+            df_ticker = raw_data[ticker]["Close"].dropna()
 
             if df_ticker.empty or len(df_ticker) < 5:
                 continue
 
             current_val = df_ticker.iloc[-1]
 
-            # Find closest date indices using searchsorted
+            # Approximate historical reference markers
             idx_12m = df_ticker.index.searchsorted(pd.Timestamp(one_year_ago))
             idx_3yr = df_ticker.index.searchsorted(pd.Timestamp(three_years_ago))
 
-            # Bound constraints
+            # Bound constraints protection
             idx_12m = min(idx_12m, len(df_ticker) - 1)
             idx_3yr = min(idx_3yr, len(df_ticker) - 1)
 
             val_12m = df_ticker.iloc[idx_12m]
             val_3yr = df_ticker.iloc[idx_3yr]
 
-            # Calculate drops/gains
+            # Performance Math calculations
             perf_12m = ((current_val - val_12m) / val_12m) * 100
             perf_3yr = ((current_val - val_3yr) / val_3yr) * 100
 
@@ -149,16 +145,18 @@ def fetch_and_calculate_performance(indices):
 
 
 # 4. Presentation UI Setup
-st.title("📉 Comprehensive Global Market Indices Decline Analyzer")
+st.title("导 Comprehensive Global Market Indices Decline Analyzer")
 st.markdown(
     "Analyze and isolate stock market indices that have experienced the steepest corrections globally over 12-month and 3-year windows."
 )
 
 indices_dict = get_indices_dict()
-df_metrics = fetch_and_calculate_performance(indices_dict)
+
+with st.spinner("Downloading global market data in a single batch..."):
+    df_metrics = fetch_and_calculate_performance(indices_dict)
 
 if not df_metrics.empty:
-    # Sidebar Configuration Controls
+    # Sidebar Sorting Selection Controls
     st.sidebar.header("Ranking Configuration")
     sort_horizon = st.sidebar.selectbox(
         "Primary Sort Benchmark",
@@ -169,7 +167,7 @@ if not df_metrics.empty:
     # Sort from worst performing (biggest fall) to best performing
     df_sorted = df_metrics.sort_values(by=sort_horizon, ascending=True)
 
-    # Transform data columns for readability
+    # Human-readable formatting function
     def format_dataframe(df):
         styled_df = df.copy()
         styled_df["12-Month Return (%)"] = styled_df["12-Month Return (%)"].map(
@@ -183,7 +181,7 @@ if not df_metrics.empty:
         )
         return styled_df
 
-    # Render Main Data Table
+    # Render Main Data Table Grid
     st.subheader(f"Global Indices Ranked by Performance ({sort_horizon})")
     st.markdown(
         f"**Successfully retrieved {len(df_sorted)} out of {len(indices_dict)} global indices.** "
@@ -196,7 +194,7 @@ if not df_metrics.empty:
         use_container_width=True,
     )
 
-    # High-Risk Flags Component
+    # High-Risk Flags UI Component
     st.subheader("⚠️ Critical Capital Corrections")
     col1, col2 = st.columns(2)
 
