@@ -1,9 +1,19 @@
+# 1. CRITICAL STREAMLIT CLOUD CACHE FIX (Must be at the very top)
+import sys
+
+try:
+    import appdirs as ad
+
+    ad.user_cache_dir = lambda *args, **kwargs: "/tmp"
+except Exception:
+    pass
+
 import datetime
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-# 1. Page Configuration
+# 2. Page Configuration
 st.set_page_config(
     page_title="Global Market Index Performance",
     layout="wide",
@@ -11,7 +21,7 @@ st.set_page_config(
 )
 
 
-# 2. Comprehensive Global Indices Dictionary
+# 3. Comprehensive Global Indices Dictionary
 @st.cache_data
 def get_indices_dict():
     return {
@@ -74,7 +84,7 @@ def get_indices_dict():
     }
 
 
-# 3. Data Processing Engine
+# 4. Data Processing Engine
 @st.cache_data(ttl=3600)
 def fetch_and_calculate_performance(indices):
     records = []
@@ -85,53 +95,51 @@ def fetch_and_calculate_performance(indices):
     tickers_list = list(indices.keys())
 
     try:
-        # Download data by specifying a standard column layout.
-        # This isolates features cleanly into raw, separate tables.
+        # Download historical tracking info
         raw_data = yf.download(
             tickers=tickers_list,
             start=three_years_ago,
             end=today,
-            group_by="column",  # This ensures flat columns matching metrics
             threads=True,
         )
     except Exception:
         return pd.DataFrame()
 
-    if raw_data.empty or "Close" not in raw_data.columns:
+    if raw_data.empty:
         return pd.DataFrame()
 
-    # Isolate the 'Close' sub-table matrix cleanly
-    close_matrix = raw_data["Close"]
+    # CRITICAL FIX: Flatten multi-index layout systematically
+    # Converts multi-layer columns directly to string formats like ('Close', '^GSPC')
+    if isinstance(raw_data.columns, pd.MultiIndex):
+        close_cols = {col[1]: col for col in raw_data.columns if col[0] == "Close"}
+    else:
+        return pd.DataFrame()
 
-    # Loop through columns safely without checking nested dictionary headers
-    for ticker in tickers_list:
-        if ticker not in close_matrix.columns:
+    for ticker, name in indices.items():
+        if ticker not in close_cols:
             continue
 
         try:
-            # Extract historical time series for index drops
-            series_close = close_matrix[ticker].dropna()
+            # Safely slice column without triggering KeyErrors
+            series_close = raw_data[close_cols[ticker]].dropna()
 
             if series_close.empty or len(series_close) < 5:
                 continue
 
             current_val = series_close.iloc[-1]
-            name = indices[ticker]
 
-            # Use searchsorted to capture dates safely around weekends and market holidays
+            # Approximate date targeting around missing holidays/weekends
             idx_12m = series_close.index.searchsorted(pd.Timestamp(one_year_ago))
             idx_3yr = series_close.index.searchsorted(
                 pd.Timestamp(three_years_ago)
             )
 
-            # Keep index lookups bound inside valid parameters
             idx_12m = min(idx_12m, len(series_close) - 1)
             idx_3yr = min(idx_3yr, len(series_close) - 1)
 
             val_12m = series_close.iloc[idx_12m]
             val_3yr = series_close.iloc[idx_3yr]
 
-            # Performance Math calculations
             perf_12m = ((current_val - val_12m) / val_12m) * 100
             perf_3yr = ((current_val - val_3yr) / val_3yr) * 100
 
@@ -150,7 +158,7 @@ def fetch_and_calculate_performance(indices):
     return pd.DataFrame(records)
 
 
-# 4. Presentation UI Setup
+# 5. UI Setup Framework
 st.title("📉 Comprehensive Global Market Indices Decline Analyzer")
 st.markdown(
     "Analyze and isolate stock market indices that have experienced the steepest corrections globally over 12-month and 3-year windows."
@@ -158,11 +166,11 @@ st.markdown(
 
 indices_dict = get_indices_dict()
 
-with st.spinner("Downloading global market data in a single batch..."):
+with st.spinner("Downloading and processing global market data..."):
     df_metrics = fetch_and_calculate_performance(indices_dict)
 
 if not df_metrics.empty:
-    # Sidebar Filtering & Sorting Selection Controls
+    # Sidebar Filtering Controls
     st.sidebar.header("Ranking Configuration")
     sort_horizon = st.sidebar.selectbox(
         "Primary Sort Benchmark",
@@ -170,10 +178,10 @@ if not df_metrics.empty:
         index=0,
     )
 
-    # Sort from worst performing (biggest fall) to best performing
+    # Order by worst performance (biggest falls) first
     df_sorted = df_metrics.sort_values(by=sort_horizon, ascending=True)
 
-    # Human-readable column formatting function
+    # Format numbers cleanly for UI display
     def format_dataframe(df):
         styled_df = df.copy()
         styled_df["12-Month Return (%)"] = styled_df["12-Month Return (%)"].map(
@@ -187,7 +195,6 @@ if not df_metrics.empty:
         )
         return styled_df
 
-    # Render Main Data Table Grid frame
     st.subheader(f"Global Indices Ranked by Performance ({sort_horizon})")
     st.markdown(
         f"**Successfully retrieved {len(df_sorted)} out of {len(indices_dict)} global indices.** "
@@ -200,7 +207,7 @@ if not df_metrics.empty:
         use_container_width=True,
     )
 
-    # High-Risk Flags UI Component
+    # High-Risk Delta Flags Element
     st.subheader("⚠️ Critical Capital Corrections")
     col1, col2 = st.columns(2)
 
